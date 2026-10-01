@@ -1,10 +1,10 @@
 # nexus
 
-Reusable library code for FTC robots, split into modules:
+The X BOTS' command base for the 2026-27 FTC season, Biobuzz.
 
-- `core` — hardware-agnostic core abstractions (`core`, `group`, and later `bind`).
-- `ftc` — FTC SDK integration *(not yet enabled)*.
-- `pedro` — Pedro Pathing integration *(not yet enabled)*.
+- `core` includes all of the actual command base code. It doesn't reference hardware or Pedro at all.
+- `ftc` is where the hardware integration is. (not enabled yet)
+- `pedro` is for Pedro Pathing integration. (not enabled yet)
 
 ## Layout
 
