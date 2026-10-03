@@ -22,7 +22,7 @@ Nexus schedules commands safely. Everything else is an optional layer.
 
 - **Conflicts:** a newly scheduled command interrupts any command holding a required subsystem. No uninterruptible commands.
 - **Default commands:** at most one per subsystem. After an interrupting command ends, the default restarts on the **next** loop, not the same one. Default commands can be disabled (used in auto).
-- **Failure policy:** by default, a command that throws is cancelled, reported, and the loop continues. A strict mode rethrows (use in tests and practice).
+- **Failure policy:** isolate and report by default, strict mode for tests. See "Failure policy" below.
 - **Stop:** on OpMode stop, cancel all commands (each gets `end(true)`) and put subsystems in a safe state.
 
 ### Loop order (fixed)
@@ -34,6 +34,25 @@ Nexus schedules commands safely. Everything else is an optional layer.
 5. End and remove finished commands
 
 Avoid allocating inside the loop. Build compositions at init. Expose loop time for telemetry.
+
+## Failure policy
+
+What happens when a command throws. Default is **isolate and report**.
+
+- **Isolate:** the scheduler catches exceptions around every call into a command (`initialize`, `execute`, `isFinished`, `end`). Only the failing command is cancelled and removed, its subsystems are released, and all other commands keep running. *Why: one bug in the intake shouldn't stop the drivetrain mid-match.*
+- **Report:** the scheduler records the last error (which command, which phase, the exception) as a read-only fact. The `ftc` layer prints it to telemetry. `core` never calls telemetry itself. Make failures obvious on the Driver Station, not only in a log.
+- **Strict mode:** the scheduler rethrows instead of isolating. Use in desktop tests and practice so failures are loud.
+
+Rules for specific cases:
+
+- **Throw in `initialize`:** the command never started, so it gets no `end`.
+- **Throw in `execute` or `isFinished`:** the command is cancelled and still gets `end(true)`.
+- **Throw in `end`:** the command is still removed, and the remaining cleanup continues. This matters most at OpMode stop, where one broken `end` must not stop other commands from reaching a safe state.
+- **Throw inside a group:** the whole group is cancelled and its other running children get `end(true)`.
+
+Open (undecided): a throw in a subsystem's `periodic` (likely report and continue, but commands may then use stale data), and whether a default command that fails repeatedly should be disabled to avoid flooding telemetry.
+
+*Cost: a command can die quietly while the robot keeps running half-working. This only helps if reporting is visible.*
 
 ## Compositions
 
@@ -56,9 +75,23 @@ core   ->  nothing
 
 ## Edge cases (proposed defaults, confirm before implementing)
 
+Informed by reading Ivy's source, where each of these is either inconsistent or left implicit.
+
+**Lifecycle**
 - `end` receives a boolean `interrupted`.
-- Scheduling an already-running command is ignored.
-- A command that is finished immediately after `initialize` still runs `end(false)` and is removed in the same loop.
+- `end` is called exactly once for every successful `initialize`, however the command stops.
+- A command that never started never gets `end`. This includes unstarted children of an interrupted sequence. *(Ivy calls `end` on them. Ours avoids cleanup running on state that was never set up.)*
+- Every command gets `execute` at least once before `isFinished` is checked, so a command that is done right after `initialize` runs `execute` once, then `end(false)`, and is removed in the same loop.
+
+**Ordering**
+- The order is `execute`, then `isFinished`, **at every level**, including inside groups. *(Ivy checks done-before-execute inside sequences but execute-before-done at the top level.)*
+- Parallel, race, and deadline children run in the order they were given, never in hash order. If several race members finish in the same loop, the first in order wins. *(Ivy stores children in a hash map, so order can vary between runs.)*
+- When a sequence step finishes, the next step is initialized in the same loop, so a run of instant commands does not cost one loop per step. *Cost: a long chain of work can land in a single loop.*
+
+**Scheduling**
+- Scheduling an already-running command is ignored, checked explicitly and **independent of requirements**. *(In Ivy, a command with no requirements can end up in the running list twice.)*
+- Any deferred or lazy command must declare its requirements up front. *(Ivy's `lazy` declares none, so the scheduler cannot see conflicts for what it wraps.)*
+- The scheduler's per-loop work must not allocate: iterate preallocated lists by index, and reuse a removal list. *(Ivy allocates a copy and a removal list every loop.)*
 
 ## Known tradeoffs
 
