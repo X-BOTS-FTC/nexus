@@ -6,7 +6,6 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
-    # Uncomment when the ftc module lands and an Android SDK is needed.
     # android-nixpkgs = {
     #   url = "github:tadfisher/android-nixpkgs/stable";
     #   inputs.nixpkgs.follows = "nixpkgs";
