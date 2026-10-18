@@ -1,21 +1,36 @@
 plugins {
     id 'java-library'
+    id 'maven-publish'
 }
 
-group = 'xbots'
-version = '0.1.0-SNAPSHOT'
+// JitPack serves this module as com.github.X-BOTS-FTC.<repo>:core:<tag>.
+// The group below is what JitPack documents for GitHub users and organizations.
+group = 'com.github.X-BOTS-FTC'
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
-    }
-}
+// JitPack passes the tag it is building in the VERSION environment variable.
+// Locally (publishToMavenLocal) there is no such variable, so use a marker
+// that is obviously not a release.
+version = System.getenv('VERSION') ?: '0.0.0-local'
 
 repositories {
     mavenCentral()
 }
 
+java {
+    // Ship a sources jar so teammates can read Nexus code from inside the robot project.
+    withSourcesJar()
+}
+
+// The library that ships is Java 8: it must load in the FTC project, which uses Java 8.
+// `release` (not just source/targetCompatibility) also restricts the code to the
+// Java 8 API, so a method that only exists in a newer JDK fails here, not on the robot.
+tasks.named('compileJava') {
+    options.release = 8
+}
+
 dependencies {
+    // Tests only. They run on the JDK that builds the project (17), not on the robot,
+    // so they are deliberately not held to Java 8.
     testImplementation platform('org.junit:junit-bom:6.1.3')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -23,4 +38,12 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
+    }
 }
