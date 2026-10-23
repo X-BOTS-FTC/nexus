@@ -1,0 +1,5 @@
+# JitPack builds with Java 8 by default. The tests need a newer JDK (JUnit 6),
+# so build with 17. The compiled library is still Java 8 bytecode: that is set
+# by `options.release = 8` in core/build.gradle, not by this file.
+jdk:
+  - openjdk17
