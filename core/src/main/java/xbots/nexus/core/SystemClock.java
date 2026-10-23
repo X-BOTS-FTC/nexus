@@ -1,6 +1,4 @@
-package xbots.nexus.ftc;
-
-import xbots.nexus.core.Clock;
+package xbots.nexus.core;
 
 public final class SystemClock implements Clock {
     @Override
