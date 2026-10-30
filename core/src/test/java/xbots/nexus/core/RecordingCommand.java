@@ -16,7 +16,7 @@ import java.util.List;
  *   throwOn(phase, times)   same, but only for the first `times` calls
  * (For IS_FINISHED nothing is logged before the throw.)
  */
-final class RecordingCommand extends Command {
+public final class RecordingCommand extends Command {
 
     private final String name;
     private final List<String> log;
@@ -27,25 +27,25 @@ final class RecordingCommand extends Command {
     private Scheduler.Phase throwPhase;
     private int throwsRemaining;
 
-    RecordingCommand(String name, List<String> log, Subsystem... requirements) {
+    public RecordingCommand(String name, List<String> log, Subsystem... requirements) {
         super(requirements);
         this.name = name;
         this.log = log;
     }
 
     /** Makes isFinished() true once execute() has been called n times (n may be 0). */
-    RecordingCommand finishAfterExecutes(int executes) {
+    public RecordingCommand finishAfterExecutes(int executes) {
         this.finishAfterExecutes = executes;
         return this;
     }
 
     /** Makes the given lifecycle method throw every time it is called. */
-    RecordingCommand throwOn(Scheduler.Phase phase) {
+    public RecordingCommand throwOn(Scheduler.Phase phase) {
         return throwOn(phase, Integer.MAX_VALUE);
     }
 
     /** Makes the given lifecycle method throw for its first `times` calls only. */
-    RecordingCommand throwOn(Scheduler.Phase phase, int times) {
+    public RecordingCommand throwOn(Scheduler.Phase phase, int times) {
         this.throwPhase = phase;
         this.throwsRemaining = times;
         return this;
