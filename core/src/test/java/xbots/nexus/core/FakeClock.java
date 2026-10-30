@@ -24,8 +24,18 @@ public final class FakeClock implements Clock {
         now = Math.addExact(now, nanos);
     }
 
+    public void advanceNanosWrapping(long nanos) {
+        if (nanos < 0) {
+            throw new IllegalArgumentException("Time cannot go backward: " + nanos);
+        }
+        now += nanos; // plain addition on purpose: overflow wraps instead of throwing
+    }
+
     /** Moves time forward by the given number of milliseconds. */
     public void advanceMillis(long millis) {
+        if (millis < 0) {
+            throw new IllegalArgumentException("Time cannot go backward: " + millis);
+        }
         advanceNanos(Math.multiplyExact(millis, 1_000_000L));
     }
 }
