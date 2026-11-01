@@ -3,35 +3,28 @@ package xbots.nexus.core;
 import java.util.ArrayList;
 
 /**
- * Runs commands. One instance per OpMode, no static state (NEXUS.md, hard rule 3).
+ * Runs commands. One instance per OpMode, and it doesnt share static state
  *
  * Every request (schedule, cancel) is queued and applied at the start of the next
  * run(), in the order it was made. Command code therefore only ever runs at
  * predictable points inside run(), and the running list never changes while it is
  * being looped over.
  *
- * One run(), in order:
+ * One run() follows these steps in this order:
  *   1. periodic() of every registered subsystem
- *   2. apply queued schedule/cancel requests
- *   3. start default commands for free subsystems
- *   4. execute() every running command
- *   5. end and remove the commands that finished or failed
+ *   2. poll() of every registered poller (triggers), in registration order
+ *   3. apply queued schedule/cancel requests
+ *   4. start default commands for free subsystems
+ *   5. execute() every running command
+ *   6. end and remove the commands that finished or failed
  *
- * Failures: a RuntimeException thrown by a command or subsystem is isolated. The
- * offender is cancelled (a command that failed after starting still gets
- * end(true)), the error is recorded for telemetry, and everything else carries on.
- * In strict mode the first failure of a run() is rethrown after all bookkeeping is
- * finished. Only RuntimeException is caught: an Error (out of memory, stack
- * overflow) escapes, because the scheduler cannot promise to stay consistent
- * after one.
- *
- * Single-threaded. Call everything from the OpMode loop thread.
+ * Our scheduler is SINGLE-THREADED. Call everything from the OpMode's loop().
  */
 public final class Scheduler {
 
     /** Where in the lifecycle a failure happened. */
     public enum Phase {
-        INITIALIZE, EXECUTE, IS_FINISHED, END, PERIODIC, SAFE_STATE
+        INITIALIZE, EXECUTE, IS_FINISHED, END, PERIODIC, SAFE_STATE, POLL
     }
 
     private static final class DefaultEntry {
@@ -66,6 +59,9 @@ public final class Scheduler {
     private final ArrayList<Subsystem> subsystems = new ArrayList<>(INITIAL_CAPACITY);
 
     private final ArrayList<DefaultEntry> defaults = new ArrayList<>(INITIAL_CAPACITY);
+
+    // Called once per run(), after the subsystems' periodic() and before requests apply.
+    private final ArrayList<Poller> pollers = new ArrayList<>(INITIAL_CAPACITY);
 
     // Commands whose execute() threw during the current run().
     private final ArrayList<Command> failedExecute = new ArrayList<>(INITIAL_CAPACITY);
@@ -133,6 +129,19 @@ public final class Scheduler {
         registerSubsystem(subsystem);
     }
 
+    /**
+     * Registers something to be polled once per run(), after every subsystem's
+     * periodic() and before queued requests are applied. Pollers run in the order
+     * they were added. Triggers register themselves here. A poller that throws is
+     * reported (phase POLL) and called again next loop; the others still run.
+     */
+    public void addPoller(Poller poller) {
+        if (poller == null) {
+            throw new IllegalArgumentException("poller is null");
+        }
+        pollers.add(poller);
+    }
+
     // ------------------------------------------------------------- requests
 
     /**
@@ -195,6 +204,7 @@ public final class Scheduler {
         failedExecute.clear();
 
         runPeriodics();
+        runPollers();
         applyRequests();
         startDefaults();
         executeAll();
@@ -244,6 +254,19 @@ public final class Scheduler {
                 subsystem.periodic();
             } catch (RuntimeException e) {
                 report(subsystem, Phase.PERIODIC, e);
+            }
+        }
+    }
+
+    private void runPollers() {
+        // size() is re-read each pass, like runPeriodics: a poller added while polling
+        // is polled in this same pass.
+        for (int i = 0; i < pollers.size(); i++) {
+            Poller poller = pollers.get(i);
+            try {
+                poller.poll();
+            } catch (RuntimeException e) {
+                report(poller, Phase.POLL, e);
             }
         }
     }
