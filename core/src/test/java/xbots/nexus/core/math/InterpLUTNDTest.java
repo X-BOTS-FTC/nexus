@@ -172,7 +172,8 @@ class InterpLUTNDTest {
         }
         InterpLUT table = builder.build();
 
-        assertEquals(4, table.dimensions());
+        assertEquals(4, table.inputDimensions());
+        assertEquals(1, table.outputDimensions());
         assertEquals(81, table.size());
 
         double[][] queries = {
@@ -419,7 +420,8 @@ class InterpLUTNDTest {
         double[][] outputs = new double[3][4];
         InterpLUT table = table2D(xs, ys, outputs);
 
-        assertEquals(2, table.dimensions());
+        assertEquals(2, table.inputDimensions());
+        assertEquals(1, table.outputDimensions());
         assertEquals(12, table.size());
         assertEquals(3, table.size(0));
         assertEquals(4, table.size(1));

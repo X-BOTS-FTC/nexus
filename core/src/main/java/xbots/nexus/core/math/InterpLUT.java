@@ -3,16 +3,15 @@ package xbots.nexus.core.math;
 import java.util.Arrays;
 
 /**
- * A look-up table that turns one or more inputs into an output by drawing smooth
- * curves through calibration points on a rectilinear grid. It still uses monotone
- * cubic (Fritsch-Carlson / PCHIP) interpolation but now it does it recursively
- * to support arbitrary number of dimensions.
+ * A look-up table that turns one or more inputs into one or more outputs by
+ * drawing smooth curves through calibration points on a rectilinear grid. It
+ * uses monotone cubic (Fritsch-Carlson / PCHIP) interpolation.
  *
- * Each input has its own sorted breakpoints, and every combination of
- * breakpoints must have an output. Points may be added in any order.
- * Points DO NOT have to be a uniform distance apart ! !
+ * <p>Each input has its own sorted breakpoints, and every combination of
+ * breakpoints must have values for every output. Points may be added in any
+ * order. Points do not have to be uniformly spaced.</p>
  *
- * Example of single dimension usage:
+ * <p>Single input, single output:</p>
  * <pre>{@code
  * InterpLUT speeds = InterpLUT.builder(1)
  *     .add(1.0, 3000)
@@ -22,25 +21,27 @@ import java.util.Arrays;
  * double speed = speeds.get(2.4);
  * }</pre>
  *
- * Two inputs (the last value passed to add is always the output):
+ * <p>Two inputs, two outputs. The last values passed to add are the outputs:</p>
  * <pre>{@code
- * InterpLUT speeds = InterpLUT.builder(2)
- *     .add(1.0, 0.0, 3000)
- *     .add(1.0, 90.0, 2500)
- *     .add(2.0, 0.0, 3600)
- *     .add(2.0, 90.0, 3100)
+ * InterpLUT table = InterpLUT.builder(2, 2)
+ *     .add(1.0, 0.0, 3000, 10.0)
+ *     .add(1.0, 90.0, 2500, 20.0)
+ *     .add(2.0, 0.0, 3600, 30.0)
+ *     .add(2.0, 90.0, 3100, 40.0)
  *     .build();
- * double speed = speeds.get(1.5, 45.0);
+ * double[] outputs = table.getOutputs(1.5, 45.0);
+ * double second = table.getOutput(1, 1.5, 45.0);
  * }</pre>
  *
  * <p>Inputs outside the table are clamped to the nearest breakpoint on each
- * axis. A NaN coordinate gives NaN output.</p>
+ * axis. A NaN coordinate gives NaN output values.</p>
  *
  * <p>The table is evaluated by folding one-dimensional monotone cubic
- * interpolants, starting with the last axis. This passes exactly through every
- * grid point and never leaves the smallest/largest output in the table, but it
- * is not a formally monotone interpolant in more than one dimension. The fold
- * order is fixed, so swapping axes can change values slightly.</p>
+ * interpolants, starting with the last axis. Each output is interpolated
+ * independently and never leaves that output's smallest/largest value in the
+ * table. This is not a formally monotone interpolant in more than one
+ * dimension. The fold order is fixed, so swapping axes can change values
+ * slightly.</p>
  */
 public final class InterpLUT {
 
@@ -51,7 +52,9 @@ public final class InterpLUT {
 
     private final double[][] axes; // one sorted set of breakpoints per input
     private final int[] sizes; // number of breakpoints on each input
-    private final double[] values; // outputs, last input changing fastest
+    private final int gridSize; // number of points in the input grid
+    private final int outputDimensions; // number of values produced per lookup
+    private final double[] values; // outputs, output-major, last input fastest
     private final double[] lastAxisSlopes; // slopes along the last input
 
     // Scratch space for evaluating more than one input. Lookups are sequential
@@ -60,19 +63,21 @@ public final class InterpLUT {
     private final double[] scratchSlopes;
     private final double[] scratchLine;
 
-    private InterpLUT(double[][] axes, int[] sizes, double[] values, double[] lastAxisSlopes) {
+    private InterpLUT(double[][] axes, int[] sizes, double[] values,
+            double[] lastAxisSlopes, int outputDimensions) {
         this.axes = axes;
         this.sizes = sizes;
         this.values = values;
         this.lastAxisSlopes = lastAxisSlopes;
+        this.outputDimensions = outputDimensions;
+        this.gridSize = values.length / outputDimensions;
 
-        int dimensions = axes.length;
-        if (dimensions == 1) {
-            work = null;
+        int inputDimensions = axes.length;
+        work = new double[outputDimensions * (gridSize / sizes[inputDimensions - 1])];
+        if (inputDimensions == 1) {
             scratchSlopes = null;
             scratchLine = null;
         } else {
-            work = new double[values.length / sizes[dimensions - 1]];
             int largestAxis = 0;
             for (int size : sizes) {
                 largestAxis = Math.max(largestAxis, size);
@@ -82,25 +87,35 @@ public final class InterpLUT {
         }
     }
 
-    /** Starts a table with a fixed number of inputs. */
-    public static Builder builder(int dimensions) {
-        return new Builder(dimensions);
+    /** Starts a table with a fixed number of inputs and one output. */
+    public static Builder builder(int inputDimensions) {
+        return new Builder(inputDimensions, 1);
+    }
+
+    /** Starts a table with a fixed number of inputs and outputs. */
+    public static Builder builder(int inputDimensions, int outputDimensions) {
+        return new Builder(inputDimensions, outputDimensions);
     }
 
     /** Number of inputs. */
-    public int dimensions() {
+    public int inputDimensions() {
         return axes.length;
+    }
+
+    /** Number of outputs. */
+    public int outputDimensions() {
+        return outputDimensions;
     }
 
     /** Total number of grid points. */
     public int size() {
-        return values.length;
+        return gridSize;
     }
 
     /** Number of breakpoints on one input. */
-    public int size(int dimension) {
-        checkDimension(dimension);
-        return sizes[dimension];
+    public int size(int inputDimension) {
+        checkDimension(inputDimension);
+        return sizes[inputDimension];
     }
 
     /** The smallest input in a one-input table. */
@@ -116,64 +131,155 @@ public final class InterpLUT {
     }
 
     /** The smallest input on one axis. */
-    public double minInput(int dimension) {
-        checkDimension(dimension);
-        return axes[dimension][0];
+    public double minInput(int inputDimension) {
+        checkDimension(inputDimension);
+        return axes[inputDimension][0];
     }
 
     /** The largest input on one axis. */
-    public double maxInput(int dimension) {
-        checkDimension(dimension);
-        return axes[dimension][sizes[dimension] - 1];
+    public double maxInput(int inputDimension) {
+        checkDimension(inputDimension);
+        return axes[inputDimension][sizes[inputDimension] - 1];
     }
 
     /**
-     * Looks up the output for a one-input table. Inputs outside the table are
-     * clamped. A NaN input gives NaN output.
+     * Looks up the single output for a one-input, one-output table. Inputs
+     * outside the table are clamped. A NaN input gives NaN output.
      */
     public double get(double input) {
-        if (axes.length != 1) {
+        if (axes.length != 1 || outputDimensions != 1) {
             throw new IllegalArgumentException(
-                    "This table has " + axes.length + " inputs; call get(coordinates...)");
+                    "This overload is only for a one-input, one-output table; use "
+                            + "get(coordinates...) for a single output, or "
+                            + "getOutput/getOutputs for multiple outputs");
         }
-        return interpolate1D(axes[0], values, 0, lastAxisSlopes, 0, values.length, input);
+        return interpolate1D(axes[0], values, 0, lastAxisSlopes, 0, gridSize, input);
     }
 
     /**
-     * Looks up the output for a table with any number of inputs. Coordinates
-     * outside the table are clamped on each axis. A NaN coordinate gives NaN
-     * output.
-     *
-     * <p>To avoid allocating an argument array inside a control loop, pass a
-     * reused array instead of writing the coordinates separately.</p>
+     * Looks up the single output for a table with any number of inputs. This is
+     * only valid for tables with exactly one output.
      */
     public double get(double... coordinates) {
+        if (outputDimensions != 1) {
+            throw new IllegalArgumentException(
+                    "This table has " + outputDimensions
+                            + " outputs; use getOutput(output, coordinates...) or "
+                            + "getOutputs(coordinates...)");
+        }
+        checkCoordinates(coordinates);
+        if (hasNaN(coordinates)) {
+            return Double.NaN;
+        }
+        return evaluateOutput(0, coordinates);
+    }
+
+    /**
+     * Looks up one output for a table with any number of inputs and outputs.
+     * Pass a reused coordinate array to avoid allocating inside a control loop.
+     */
+    public double getOutput(int output, double... coordinates) {
+        checkOutput(output);
+        checkCoordinates(coordinates);
+        if (hasNaN(coordinates)) {
+            return Double.NaN;
+        }
+        return evaluateOutput(output, coordinates);
+    }
+
+    /**
+     * Looks up every output, returning a new array. Pass a reused coordinate
+     * array to avoid allocating the coordinates inside a control loop.
+     */
+    public double[] getOutputs(double... coordinates) {
+        checkCoordinates(coordinates);
+        double[] outputs = new double[outputDimensions];
+        if (hasNaN(coordinates)) {
+            Arrays.fill(outputs, Double.NaN);
+            return outputs;
+        }
+        evaluateAll(coordinates, outputs);
+        return outputs;
+    }
+
+    /**
+     * Looks up every output into a caller-provided array. This does not allocate
+     * when both arrays are reused.
+     */
+    public void getOutputs(double[] coordinates, double[] outputs) {
+        checkCoordinates(coordinates);
+        if (outputs == null) {
+            throw new NullPointerException("outputs");
+        }
+        if (outputs.length != outputDimensions) {
+            throw new IllegalArgumentException(
+                    "Expected " + outputDimensions + " outputs, but got " + outputs.length);
+        }
+        if (hasNaN(coordinates)) {
+            Arrays.fill(outputs, Double.NaN);
+            return;
+        }
+        evaluateAll(coordinates, outputs);
+    }
+
+    private void checkDimension(int inputDimension) {
+        if (inputDimension < 0 || inputDimension >= axes.length) {
+            throw new IllegalArgumentException(
+                    "Dimension " + inputDimension + " is outside 0.." + (axes.length - 1));
+        }
+    }
+
+    private void checkSingleInput() {
+        if (axes.length != 1) {
+            throw new IllegalStateException(
+                    "This table has " + axes.length
+                            + " inputs; use minInput(dimension)/maxInput(dimension)");
+        }
+    }
+
+    private void checkOutput(int output) {
+        if (output < 0 || output >= outputDimensions) {
+            throw new IllegalArgumentException(
+                    "Output " + output + " is outside 0.." + (outputDimensions - 1));
+        }
+    }
+
+    private void checkCoordinates(double[] coordinates) {
         if (coordinates == null) {
             throw new NullPointerException("coordinates");
         }
-        int dimensions = axes.length;
-        if (coordinates.length != dimensions) {
+        if (coordinates.length != axes.length) {
             throw new IllegalArgumentException(
-                    "Expected " + dimensions + " coordinates, but got " + coordinates.length);
+                    "Expected " + axes.length + " coordinates, but got " + coordinates.length);
         }
-        if (dimensions == 1) {
-            return get(coordinates[0]);
-        }
-        for (double coordinate : coordinates) {
-            if (Double.isNaN(coordinate)) {
-                return Double.NaN;
+    }
+
+    private static boolean hasNaN(double[] values) {
+        for (double value : values) {
+            if (Double.isNaN(value)) {
+                return true;
             }
         }
+        return false;
+    }
 
-        // Fold the last input first: each line along that input becomes one
-        // value. The remaining loop folds the other inputs until one value is left.
+    // Folds one output through the grid. Used when only a single component is
+    // needed, so there is no reason to compute the other outputs.
+    private double evaluateOutput(int output, double[] coordinates) {
+        int base = output * gridSize;
+        int dimensions = axes.length;
+        if (dimensions == 1) {
+            return interpolate1D(axes[0], values, base, lastAxisSlopes, base, gridSize,
+                    coordinates[0]);
+        }
+
         int lineLength = sizes[dimensions - 1];
-        int lineCount = values.length / lineLength;
+        int lineCount = gridSize / lineLength;
         double query = clamp(coordinates[dimensions - 1], axes[dimensions - 1], lineLength);
         for (int line = 0; line < lineCount; line++) {
             int offset = line * lineLength;
-            work[line] = interpolate1D(axes[dimensions - 1], values, offset,
-                    lastAxisSlopes, offset, lineLength, query);
+            work[line] = interpolate1D(axes[dimensions - 1], values, base + offset,
+                    lastAxisSlopes, base + offset, lineLength, query);
         }
 
         int activeLength = lineCount;
@@ -185,8 +291,6 @@ public final class InterpLUT {
                 int offset = line * lineLength;
                 computeSlopes1D(axes[dimension], work, offset,
                         scratchSlopes, 0, lineLength, scratchLine);
-                // Safe in place: the line is read before its output is written,
-                // and the output index is before the line's own start.
                 work[line] = interpolate1D(axes[dimension], work, offset,
                         scratchSlopes, 0, lineLength, query);
             }
@@ -195,17 +299,76 @@ public final class InterpLUT {
         return work[0];
     }
 
-    private void checkDimension(int dimension) {
-        if (dimension < 0 || dimension >= axes.length) {
-            throw new IllegalArgumentException(
-                    "Dimension " + dimension + " is outside 0.." + (axes.length - 1));
-        }
-    }
+    // Folds every output through the grid at the same time. All lines on one
+    // axis share the same query, so the segment and cubic weights are computed
+    // once per stage instead of once per line and output.
+    private void evaluateAll(double[] coordinates, double[] outputs) {
+        int dimensions = axes.length;
+        int activeLength = gridSize;
+        double[] source = values;
+        boolean firstStage = true;
 
-    private void checkSingleInput() {
-        if (axes.length != 1) {
-            throw new IllegalStateException(
-                    "This table has " + axes.length + " inputs; use minInput(dimension)/maxInput(dimension)");
+        for (int dimension = dimensions - 1; dimension >= 0; dimension--) {
+            int lineLength = sizes[dimension];
+            int lineCount = activeLength / lineLength;
+            double[] axis = axes[dimension];
+            double query = clamp(coordinates[dimension], axis, lineLength);
+            boolean atLower = query <= axis[0];
+            boolean atUpper = query >= axis[lineLength - 1];
+
+            if (atLower || atUpper) {
+                int valueOffset = atLower ? 0 : lineLength - 1;
+                for (int output = 0; output < outputDimensions; output++) {
+                    int sourceBase = output * activeLength;
+                    int destinationBase = output * lineCount;
+                    for (int line = 0; line < lineCount; line++) {
+                        work[destinationBase + line] =
+                                source[sourceBase + line * lineLength + valueOffset];
+                    }
+                }
+            } else {
+                int segment = findSegment(axis, lineLength, query);
+                double width = axis[segment + 1] - axis[segment];
+                double t = (query - axis[segment]) / width;
+                double t2 = t * t;
+                double t3 = t2 * t;
+                double leftPoint = 2 * t3 - 3 * t2 + 1;
+                double leftSlope = t3 - 2 * t2 + t;
+                double rightPoint = -2 * t3 + 3 * t2;
+                double rightSlope = t3 - t2;
+
+                for (int output = 0; output < outputDimensions; output++) {
+                    int sourceBase = output * activeLength;
+                    int destinationBase = output * lineCount;
+                    for (int line = 0; line < lineCount; line++) {
+                        int sourceOffset = sourceBase + line * lineLength;
+                        double[] slopeData;
+                        int slopeOffset;
+                        if (firstStage) {
+                            slopeData = lastAxisSlopes;
+                            slopeOffset = output * gridSize + line * lineLength;
+                        } else {
+                            computeSlopes1D(axis, source, sourceOffset,
+                                    scratchSlopes, 0, lineLength, scratchLine);
+                            slopeData = scratchSlopes;
+                            slopeOffset = 0;
+                        }
+                        // Safe in place: the line is read before its output is
+                        // written, and output indices stay below unread lines.
+                        work[destinationBase + line] = interpolate1DFromWeights(
+                                source, sourceOffset, slopeData, slopeOffset,
+                                segment, width, leftPoint, leftSlope, rightPoint, rightSlope);
+                    }
+                }
+            }
+
+            source = work;
+            activeLength = lineCount;
+            firstStage = false;
+        }
+
+        for (int output = 0; output < outputDimensions; output++) {
+            outputs[output] = work[output];
         }
     }
 
@@ -217,6 +380,15 @@ public final class InterpLUT {
             return axis[length - 1];
         }
         return value;
+    }
+
+    private static double interpolate1DFromWeights(double[] ys, int ysOffset,
+            double[] slopes, int slopesOffset, int segment, double width,
+            double leftPoint, double leftSlope, double rightPoint, double rightSlope) {
+        return leftPoint * ys[ysOffset + segment]
+                + leftSlope * width * slopes[slopesOffset + segment]
+                + rightPoint * ys[ysOffset + segment + 1]
+                + rightSlope * width * slopes[slopesOffset + segment + 1];
     }
 
     private static double interpolate1D(double[] xs, double[] ys, int ysOffset,
@@ -243,10 +415,8 @@ public final class InterpLUT {
         double rightPoint = -2 * t3 + 3 * t2;
         double rightSlope = t3 - t2;
 
-        return leftPoint * ys[ysOffset + i]
-                + leftSlope * width * slopes[slopesOffset + i]
-                + rightPoint * ys[ysOffset + i + 1]
-                + rightSlope * width * slopes[slopesOffset + i + 1];
+        return interpolate1DFromWeights(ys, ysOffset, slopes, slopesOffset, i, width,
+                leftPoint, leftSlope, rightPoint, rightSlope);
     }
 
     // Binary search for the stretch that contains the input: the largest i with
@@ -267,9 +437,9 @@ public final class InterpLUT {
 
     @Override
     public String toString() {
-        if (axes.length == 1) {
+        if (axes.length == 1 && outputDimensions == 1) {
             StringBuilder text = new StringBuilder("[");
-            for (int i = 0; i < values.length; i++) {
+            for (int i = 0; i < gridSize; i++) {
                 if (i > 0) {
                     text.append(", ");
                 }
@@ -279,7 +449,9 @@ public final class InterpLUT {
         }
 
         StringBuilder text = new StringBuilder("InterpLUT[");
-        text.append(axes.length).append(" inputs, sizes=").append(Arrays.toString(sizes));
+        text.append(axes.length).append(" inputs, ");
+        text.append(outputDimensions).append(outputDimensions == 1 ? " output" : " outputs");
+        text.append(", sizes=").append(Arrays.toString(sizes));
         text.append(", axes=[");
         for (int i = 0; i < axes.length; i++) {
             if (i > 0) {
@@ -297,72 +469,81 @@ public final class InterpLUT {
     public static final class Builder {
 
         private double[] points = new double[16];
-        private final int dimensions;
+        private final int inputDimensions;
+        private final int outputDimensions;
         private int count = 0;
 
-        private Builder(int dimensions) {
-            if (dimensions < 1) {
+        private Builder(int inputDimensions, int outputDimensions) {
+            if (inputDimensions < 1) {
                 throw new IllegalArgumentException(
-                        "A look-up table needs at least one input, but was given " + dimensions);
+                        "A look-up table needs at least one input, but was given "
+                                + inputDimensions);
             }
-            this.dimensions = dimensions;
+            if (outputDimensions < 1) {
+                throw new IllegalArgumentException(
+                        "A look-up table needs at least one output, but was given "
+                                + outputDimensions);
+            }
+            this.inputDimensions = inputDimensions;
+            this.outputDimensions = outputDimensions;
         }
 
         /**
-         * Adds a calibration point to a one-input table.
+         * Adds a calibration point to a one-input, one-output table.
          *
          * @throws IllegalArgumentException if either value is NaN or infinite
          */
         public Builder add(double input, double output) {
-            if (dimensions != 1) {
+            if (inputDimensions != 1 || outputDimensions != 1) {
                 throw new IllegalArgumentException(
-                        "This builder expects " + dimensions
-                                + " inputs; use add(coordinates..., output)");
+                        "This builder expects " + inputDimensions + " inputs and "
+                                + outputDimensions + " outputs; use add(coordinates..., outputs...)");
             }
             append(new double[] { input, output });
             return this;
         }
 
         /**
-         * Adds a calibration point. Every value except the last is a coordinate;
-         * the last value is the output.
+         * Adds a calibration point. The first values are coordinates and the
+         * remaining values are outputs.
          *
          * @throws IllegalArgumentException if the point has the wrong number of
          *                                  values or any value is NaN or infinite
          */
-        public Builder add(double... coordinatesAndOutput) {
-            if (coordinatesAndOutput == null) {
-                throw new NullPointerException("coordinatesAndOutput");
+        public Builder add(double... coordinatesAndOutputs) {
+            if (coordinatesAndOutputs == null) {
+                throw new NullPointerException("coordinatesAndOutputs");
             }
-            if (coordinatesAndOutput.length < 2) {
+            int expected = inputDimensions + outputDimensions;
+            if (coordinatesAndOutputs.length != expected) {
                 throw new IllegalArgumentException(
-                        "A calibration point needs at least one input and one output");
+                        "This builder expects " + inputDimensions + " inputs and "
+                                + outputDimensions + " outputs (" + expected + " values), but got "
+                                + coordinatesAndOutputs.length);
             }
-            int pointDimensions = coordinatesAndOutput.length - 1;
-            if (dimensions != pointDimensions) {
-                throw new IllegalArgumentException(
-                        "This builder expects " + dimensions + " inputs and one output, but got "
-                                + coordinatesAndOutput.length + " values");
-            }
-            append(coordinatesAndOutput);
+            append(coordinatesAndOutputs);
             return this;
         }
 
         private void append(double[] point) {
-            for (int i = 0; i < dimensions; i++) {
+            for (int i = 0; i < inputDimensions; i++) {
                 checkRealNumber("Input", point[i]);
             }
-            checkRealNumber("Output", point[dimensions]);
+            for (int i = 0; i < outputDimensions; i++) {
+                checkRealNumber("Output", point[inputDimensions + i]);
+            }
 
-            int stride = dimensions + 1;
+            int stride = inputDimensions + outputDimensions;
             ensureCapacity(stride);
             int offset = count * stride;
-            for (int i = 0; i < dimensions; i++) {
+            for (int i = 0; i < inputDimensions; i++) {
                 // Normalize negative zero so it cannot create a second, equal axis value.
                 double coordinate = point[i];
                 points[offset + i] = coordinate == 0.0 ? 0.0 : coordinate;
             }
-            points[offset + dimensions] = point[dimensions];
+            for (int i = 0; i < outputDimensions; i++) {
+                points[offset + inputDimensions + i] = point[inputDimensions + i];
+            }
             count++;
         }
 
@@ -405,8 +586,7 @@ public final class InterpLUT {
                         "A look-up table needs at least one calibration point");
             }
 
-            int inputCount = dimensions;
-            int stride = inputCount + 1;
+            int stride = inputDimensions + outputDimensions;
             int pointCount = count;
             long pointValues = (long) pointCount * stride;
             if (pointValues > Integer.MAX_VALUE) {
@@ -414,9 +594,9 @@ public final class InterpLUT {
             }
             double[] source = Arrays.copyOf(points, (int) pointValues);
 
-            double[][] axes = new double[inputCount][];
-            int[] sizes = new int[inputCount];
-            for (int dimension = 0; dimension < inputCount; dimension++) {
+            double[][] axes = new double[inputDimensions][];
+            int[] sizes = new int[inputDimensions];
+            for (int dimension = 0; dimension < inputDimensions; dimension++) {
                 double[] coordinates = new double[pointCount];
                 for (int i = 0; i < pointCount; i++) {
                     coordinates[i] = source[i * stride + dimension];
@@ -432,28 +612,35 @@ public final class InterpLUT {
                 sizes[dimension] = unique;
             }
 
-            long gridSize = 1;
+            long gridSizeLong = 1;
             for (int size : sizes) {
-                gridSize *= size;
-                if (gridSize > Integer.MAX_VALUE) {
+                gridSizeLong *= size;
+                if (gridSizeLong > Integer.MAX_VALUE) {
                     throw new IllegalArgumentException(
                             "The table is too large: it has more than "
                                     + Integer.MAX_VALUE + " grid points");
                 }
             }
-            int totalSize = (int) gridSize;
+            int gridSize = (int) gridSizeLong;
 
-            int[] strides = new int[inputCount];
-            strides[inputCount - 1] = 1;
-            for (int dimension = inputCount - 2; dimension >= 0; dimension--) {
+            long totalValues = (long) gridSize * outputDimensions;
+            if (totalValues > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(
+                        "The table is too large: it has more than "
+                                + Integer.MAX_VALUE + " output values");
+            }
+
+            int[] strides = new int[inputDimensions];
+            strides[inputDimensions - 1] = 1;
+            for (int dimension = inputDimensions - 2; dimension >= 0; dimension--) {
                 strides[dimension] = strides[dimension + 1] * sizes[dimension + 1];
             }
 
-            double[] values = new double[totalSize];
-            Arrays.fill(values, Double.NaN);
+            double[] values = new double[(int) totalValues];
+            boolean[] filled = new boolean[gridSize];
             for (int i = 0; i < pointCount; i++) {
                 int index = 0;
-                for (int dimension = 0; dimension < inputCount; dimension++) {
+                for (int dimension = 0; dimension < inputDimensions; dimension++) {
                     int position = Arrays.binarySearch(
                             axes[dimension], source[i * stride + dimension]);
                     if (position < 0) {
@@ -464,33 +651,40 @@ public final class InterpLUT {
                     }
                     index += position * strides[dimension];
                 }
-                if (!Double.isNaN(values[index])) {
+                if (filled[index]) {
                     throw new IllegalArgumentException(
                             "Two points have the same input values: "
-                                    + pointText(source, i * stride, inputCount));
+                                    + pointText(source, i * stride, inputDimensions, outputDimensions));
                 }
-                values[index] = source[i * stride + inputCount];
+                filled[index] = true;
+                int sourceOutput = i * stride + inputDimensions;
+                for (int output = 0; output < outputDimensions; output++) {
+                    values[output * gridSize + index] = source[sourceOutput + output];
+                }
             }
 
-            for (int index = 0; index < totalSize; index++) {
-                if (Double.isNaN(values[index])) {
+            for (int index = 0; index < gridSize; index++) {
+                if (!filled[index]) {
                     throw new IllegalArgumentException(
                             "Missing grid point: "
                                     + indexText(index, sizes, strides, axes));
                 }
             }
 
-            double[] lastAxisSlopes = new double[totalSize];
-            int lastSize = sizes[inputCount - 1];
-            int lineCount = totalSize / lastSize;
+            double[] lastAxisSlopes = new double[(int) totalValues];
+            int lastSize = sizes[inputDimensions - 1];
+            int lineCount = gridSize / lastSize;
             double[] lineScratch = new double[lastSize - 1];
-            for (int line = 0; line < lineCount; line++) {
-                int offset = line * lastSize;
-                computeSlopes1D(axes[inputCount - 1], values, offset,
-                        lastAxisSlopes, offset, lastSize, lineScratch);
+            for (int output = 0; output < outputDimensions; output++) {
+                int base = output * gridSize;
+                for (int line = 0; line < lineCount; line++) {
+                    int offset = base + line * lastSize;
+                    computeSlopes1D(axes[inputDimensions - 1], values, offset,
+                            lastAxisSlopes, offset, lastSize, lineScratch);
+                }
             }
 
-            return new InterpLUT(axes, sizes, values, lastAxisSlopes);
+            return new InterpLUT(axes, sizes, values, lastAxisSlopes, outputDimensions);
         }
 
         private static int dedupe(double[] sorted) {
@@ -504,15 +698,29 @@ public final class InterpLUT {
             return unique;
         }
 
-        private static String pointText(double[] point, int offset, int dimensions) {
+        private static String pointText(double[] point, int offset,
+                int inputDimensions, int outputDimensions) {
             StringBuilder text = new StringBuilder("(");
-            for (int dimension = 0; dimension < dimensions; dimension++) {
+            for (int dimension = 0; dimension < inputDimensions; dimension++) {
                 if (dimension > 0) {
                     text.append(", ");
                 }
                 text.append(point[offset + dimension]);
             }
-            return text.append(") -> ").append(point[offset + dimensions]).toString();
+            text.append(") -> ");
+            if (outputDimensions == 1) {
+                text.append(point[offset + inputDimensions]);
+            } else {
+                text.append("[");
+                for (int output = 0; output < outputDimensions; output++) {
+                    if (output > 0) {
+                        text.append(", ");
+                    }
+                    text.append(point[offset + inputDimensions + output]);
+                }
+                text.append("]");
+            }
+            return text.toString();
         }
 
         private static String indexText(int index, int[] sizes, int[] strides, double[][] axes) {
