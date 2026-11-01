@@ -13,7 +13,7 @@ class InterpLUTTest {
 
     // Builds a table from alternating input and output values: x0, y0, x1, y1, ...
     private static InterpLUT lut(double... pairs) {
-        InterpLUT.Builder builder = InterpLUT.builder();
+        InterpLUT.Builder builder = InterpLUT.builder(1);
         for (int i = 0; i < pairs.length; i += 2) {
             builder.add(pairs[i], pairs[i + 1]);
         }
@@ -35,6 +35,26 @@ class InterpLUTTest {
         assertEquals(12, table.get(2), EPSILON);
         assertEquals(23, table.get(3), EPSILON);
         assertEquals(20, table.get(4.5), EPSILON);
+    }
+
+    @Test
+    void oneDimensionalResultsMatchTheOriginalImplementation() {
+        InterpLUT table = lut(0, 0, 1, 11, 2, 12, 3, 23, 4.5, 20);
+        assertEquals(6.609834957055044, table.get(0.5), EPSILON);
+        assertEquals(11.5, table.get(1.5), EPSILON);
+        assertEquals(17.765165042944957, table.get(2.5), EPSILON);
+        assertEquals(21.875, table.get(3.75), EPSILON);
+        assertEquals(20.569444444444443, table.get(4.25), EPSILON);
+
+        InterpLUT rising = lut(0, 0, 1, 11, 2, 12, 3, 23);
+        assertEquals(6.609834957055044, rising.get(0.5), EPSILON);
+        assertEquals(11.5, rising.get(1.5), EPSILON);
+        assertEquals(16.390165042944957, rising.get(2.5), EPSILON);
+
+        InterpLUT falling = lut(0, 23, 1, 12, 2, 11, 3, 0);
+        assertEquals(16.390165042944954, falling.get(0.5), EPSILON);
+        assertEquals(11.5, falling.get(1.5), EPSILON);
+        assertEquals(6.609834957055044, falling.get(2.5), EPSILON);
     }
 
     @Test
@@ -148,7 +168,7 @@ class InterpLUTTest {
     @Test
     void moreThanEightPointsAreKept() {
         // The builder's storage starts at 8 points and has to grow.
-        InterpLUT.Builder builder = InterpLUT.builder();
+        InterpLUT.Builder builder = InterpLUT.builder(1);
         for (int i = 0; i < 20; i++) {
             builder.add(i, i * 2);
         }
@@ -160,7 +180,7 @@ class InterpLUTTest {
 
     @Test
     void addingMorePointsAfterBuildingDoesNotChangeAnEarlierTable() {
-        InterpLUT.Builder builder = InterpLUT.builder().add(0, 0).add(10, 10);
+        InterpLUT.Builder builder = InterpLUT.builder(1).add(0, 0).add(10, 10);
         InterpLUT first = builder.build();
 
         builder.add(20, 0);
@@ -174,23 +194,23 @@ class InterpLUTTest {
 
     @Test
     void rejectsTooFewPoints() {
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder().build());
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder().add(1, 1).build());
+        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(1).build());
+        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(1).add(1, 1).build());
     }
 
     @Test
     void rejectsTwoPointsWithTheSameInput() {
         assertThrows(IllegalArgumentException.class,
-                () -> InterpLUT.builder().add(1, 1).add(2, 5).add(1, 9).build());
+                () -> InterpLUT.builder(1).add(1, 1).add(2, 5).add(1, 9).build());
     }
 
     @Test
     void rejectsValuesThatAreNotRealNumbers() {
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder().add(Double.NaN, 1));
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder().add(1, Double.NaN));
+        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(1).add(Double.NaN, 1));
+        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(1).add(1, Double.NaN));
         assertThrows(IllegalArgumentException.class,
-                () -> InterpLUT.builder().add(Double.POSITIVE_INFINITY, 1));
+                () -> InterpLUT.builder(1).add(Double.POSITIVE_INFINITY, 1));
         assertThrows(IllegalArgumentException.class,
-                () -> InterpLUT.builder().add(1, Double.NEGATIVE_INFINITY));
+                () -> InterpLUT.builder(1).add(1, Double.NEGATIVE_INFINITY));
     }
 }
