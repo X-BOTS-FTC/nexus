@@ -179,6 +179,20 @@ class InterpLUTVectorTest {
                 }
             }
         }
+
+        double[][] extrapolatedQueries = {
+                {-1, 3, -0.5},
+                {2.5, -1, 3},
+                {-2, -2, -2},
+                {3, 3, 3}
+        };
+        for (double[] query : extrapolatedQueries) {
+            double[] all = vector.getOutputs(query[0], query[1], query[2]);
+            assertEquals(scalar0.get(query[0], query[1], query[2]), all[0], 0.0);
+            assertEquals(scalar1.get(query[0], query[1], query[2]), all[1], 0.0);
+            assertEquals(all[0], vector.getOutput(0, query[0], query[1], query[2]), 0.0);
+            assertEquals(all[1], vector.getOutput(1, query[0], query[1], query[2]), 0.0);
+        }
     }
 
     @Test
@@ -277,7 +291,9 @@ class InterpLUTVectorTest {
                 {0.25, 0.75},
                 {1.5, 1.5},
                 {0.1, 1.9},
-                {1.95, 0.05}
+                {1.95, 0.05},
+                {-0.5, 2.5},
+                {3, -1}
         };
         for (double[] query : queries) {
             double[] all = vector.getOutputs(query[0], query[1]);
@@ -325,7 +341,7 @@ class InterpLUTVectorTest {
     // ---------------------------------------------------- edges
 
     @Test
-    void clampsPerAxisAndNanFillsAllOutputs() {
+    void extrapolatesPerAxisAndNanFillsAllOutputs() {
         double[] xs = {1, 2, 3};
         double[] ys = {10, 20, 30};
         double[][][] outputs = new double[3][3][2];
@@ -337,17 +353,28 @@ class InterpLUTVectorTest {
         }
         InterpLUT vector = vector2D(xs, ys, outputs);
 
-        assertArrayEquals(vector.getOutputs(1, 10), vector.getOutputs(0, 0), 0.0);
-        assertArrayEquals(vector.getOutputs(3, 30), vector.getOutputs(100, 100), 0.0);
-        assertArrayEquals(new double[] {0, 0}, vector.getOutputs(0, 0), 0.0);
-        assertArrayEquals(new double[] {1, -1}, vector.getOutputs(0, 20), 0.0);
-        assertArrayEquals(new double[] {4, 18}, vector.getOutputs(100, 100), 0.0);
+        assertArrayEquals(new double[] {-2, -9}, vector.getOutputs(0, 0), EPSILON);
+        assertArrayEquals(new double[] {0, -11}, vector.getOutputs(0, 20), EPSILON);
+        assertArrayEquals(new double[] {108, 981}, vector.getOutputs(100, 100), EPSILON);
+        assertEquals(-2, vector.getOutput(0, 0, 0), EPSILON);
+        assertEquals(-9, vector.getOutput(1, 0, 0), EPSILON);
+        assertEquals(108, vector.getOutput(0, 100, 100), EPSILON);
+        assertEquals(981, vector.getOutput(1, 100, 100), EPSILON);
+
+        double[] filledOut = new double[2];
+        vector.getOutputs(new double[] {100, 100}, filledOut);
+        assertArrayEquals(new double[] {108, 981}, filledOut, EPSILON);
 
         double[] nan = vector.getOutputs(Double.NaN, 15);
         assertEquals(2, nan.length);
         assertTrue(Double.isNaN(nan[0]));
         assertTrue(Double.isNaN(nan[1]));
         assertTrue(Double.isNaN(vector.getOutput(0, Double.NaN, 15)));
+
+        double[] infinity = vector.getOutputs(Double.POSITIVE_INFINITY, 15);
+        assertTrue(Double.isNaN(infinity[0]));
+        assertTrue(Double.isNaN(infinity[1]));
+        assertTrue(Double.isNaN(vector.getOutput(1, 15, Double.NEGATIVE_INFINITY)));
 
         double[] filled = {123, 456};
         vector.getOutputs(new double[] {1.0, Double.NaN}, filled);
@@ -452,15 +479,15 @@ class InterpLUTVectorTest {
                 .add(1, 1, 3, 13);
         InterpLUT first = builder.build();
 
-        builder.add(2, 0, 4, 14).add(2, 1, 5, 15);
+        builder.add(2, 0, 100, 110).add(2, 1, 101, 111);
         InterpLUT second = builder.build();
 
         assertEquals(4, first.size());
         assertEquals(2, first.size(0));
         assertEquals(6, second.size());
         assertEquals(3, second.size(0));
-        assertArrayEquals(new double[] {2, 12}, first.getOutputs(2.0, 0.0), EPSILON);
-        assertArrayEquals(new double[] {4, 14}, second.getOutputs(2.0, 0.0), EPSILON);
+        assertArrayEquals(new double[] {4, 14}, first.getOutputs(2.0, 0.0), EPSILON);
+        assertArrayEquals(new double[] {100, 110}, second.getOutputs(2.0, 0.0), EPSILON);
     }
 
     @Test

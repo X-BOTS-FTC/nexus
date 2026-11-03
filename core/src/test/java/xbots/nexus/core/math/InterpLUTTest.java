@@ -58,18 +58,26 @@ class InterpLUTTest {
     }
 
     @Test
-    void inputsOutsideTheTableAreClamped() {
+    void inputsOutsideTheTableExtrapolateLinearly() {
         InterpLUT table = lut(1, 10, 2, 20, 3, 15);
-        assertEquals(10, table.get(0.5), EPSILON);
-        assertEquals(10, table.get(-1000), EPSILON);
-        assertEquals(15, table.get(100), EPSILON);
-        assertEquals(10, table.get(Double.NEGATIVE_INFINITY), EPSILON);
-        assertEquals(15, table.get(Double.POSITIVE_INFINITY), EPSILON);
+        assertEquals(5, table.get(0.5), EPSILON);
+        assertEquals(-10000, table.get(-1000), EPSILON);
+        assertEquals(-470, table.get(100), EPSILON);
     }
 
     @Test
-    void nanInputGivesNan() {
-        assertTrue(Double.isNaN(lut(0, 0, 1, 1).get(Double.NaN)));
+    void linearDataExtrapolatesAlongTheSameLine() {
+        InterpLUT table = lut(0, 0, 10, 100);
+        assertEquals(-50, table.get(-5), EPSILON);
+        assertEquals(150, table.get(15), EPSILON);
+    }
+
+    @Test
+    void nanAndInfinityInputsGiveNan() {
+        InterpLUT table = lut(0, 0, 1, 1);
+        assertTrue(Double.isNaN(table.get(Double.NaN)));
+        assertTrue(Double.isNaN(table.get(Double.NEGATIVE_INFINITY)));
+        assertTrue(Double.isNaN(table.get(Double.POSITIVE_INFINITY)));
     }
 
     @Test
@@ -104,7 +112,7 @@ class InterpLUTTest {
         // case where an implementation with too loose a slope limit makes the curve dip.
         InterpLUT table = lut(0, 0, 1, 11, 2, 12, 3, 23);
         double previous = table.get(0);
-        for (int k = 1; k <= 3 * SAMPLES; k++) {
+        for (int k = 1; k <= SAMPLES; k++) {
             double value = table.get(sample(0, 3, k));
             assertTrue(value >= previous - EPSILON,
                     "went down at step " + k + ": " + previous + " -> " + value);
@@ -116,7 +124,7 @@ class InterpLUTTest {
     void fallingDataNeverGoesUp() {
         InterpLUT table = lut(0, 23, 1, 12, 2, 11, 3, 0);
         double previous = table.get(0);
-        for (int k = 1; k <= 3 * SAMPLES; k++) {
+        for (int k = 1; k <= SAMPLES; k++) {
             double value = table.get(sample(0, 3, k));
             assertTrue(value <= previous + EPSILON,
                     "went up at step " + k + ": " + previous + " -> " + value);
@@ -128,7 +136,7 @@ class InterpLUTTest {
     void neverOvershootsPastAPeakInTheData() {
         // The highest point is 10 and the lowest is 0. The curve must stay inside that range.
         InterpLUT table = lut(0, 0, 1, 10, 2, 8, 3, 0);
-        for (int k = 0; k <= 3 * SAMPLES; k++) {
+        for (int k = 0; k <= SAMPLES; k++) {
             double value = table.get(sample(0, 3, k));
             assertTrue(value <= 10 + EPSILON, "above the peak: " + value);
             assertTrue(value >= 0 - EPSILON, "below the lowest point: " + value);
@@ -138,7 +146,7 @@ class InterpLUTTest {
     @Test
     void neverUndershootsBelowADipInTheData() {
         InterpLUT table = lut(0, 10, 1, 0, 2, 2, 3, 10);
-        for (int k = 0; k <= 3 * SAMPLES; k++) {
+        for (int k = 0; k <= SAMPLES; k++) {
             double value = table.get(sample(0, 3, k));
             assertTrue(value >= 0 - EPSILON, "below the dip: " + value);
             assertTrue(value <= 10 + EPSILON, "above the highest point: " + value);
@@ -159,7 +167,7 @@ class InterpLUTTest {
     void pointsMayBeAddedInAnyOrder() {
         InterpLUT ordered = lut(0, 0, 1, 11, 2, 12, 3, 23);
         InterpLUT shuffled = lut(2, 12, 0, 0, 3, 23, 1, 11);
-        for (int k = 0; k <= 3 * SAMPLES; k++) {
+        for (int k = 0; k <= SAMPLES; k++) {
             double x = sample(0, 3, k);
             assertEquals(ordered.get(x), shuffled.get(x), 0.0);
         }
@@ -188,8 +196,8 @@ class InterpLUTTest {
 
         assertEquals(2, first.size());
         assertEquals(3, second.size());
-        assertEquals(10, first.get(100), EPSILON);
-        assertEquals(0, second.get(100), EPSILON);
+        assertEquals(100, first.get(100), EPSILON);
+        assertEquals(-80, second.get(100), EPSILON);
     }
 
     @Test

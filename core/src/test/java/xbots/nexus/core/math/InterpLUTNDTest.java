@@ -187,8 +187,9 @@ class InterpLUTNDTest {
                     table.get(query[0], query[1], query[2], query[3]), EPSILON);
         }
 
-        assertEquals(fourDimensionalPlane(2, 2, 2, 2),
+        assertEquals(fourDimensionalPlane(100, 100, 100, 100),
                 table.get(100, 100, 100, 100), EPSILON);
+        assertTrue(Double.isNaN(table.get(Double.POSITIVE_INFINITY, 0, 0, 0)));
     }
 
     @Test
@@ -315,7 +316,7 @@ class InterpLUTNDTest {
     // ---------------------------------------------------- edges
 
     @Test
-    void clampsEachAxisIndependently() {
+    void extrapolatesEachAxisIndependently() {
         double[] xs = {1, 2, 3};
         double[] ys = {10, 20, 30};
         double[][] outputs = {
@@ -325,13 +326,14 @@ class InterpLUTNDTest {
         };
         InterpLUT table = table2D(xs, ys, outputs);
 
-        assertEquals(table.get(1.0, 15.0), table.get(0.0, 15.0), EPSILON);
-        assertEquals(table.get(1.0, 15.0), table.get(Double.NEGATIVE_INFINITY, 15.0), EPSILON);
-        assertEquals(table.get(2.0, 10.0), table.get(2.0, 5.0), EPSILON);
-        assertEquals(table.get(2.0, 30.0), table.get(2.0, Double.POSITIVE_INFINITY), EPSILON);
-        assertEquals(1, table.get(-100, -100), EPSILON);
-        assertEquals(9, table.get(100, 100), EPSILON);
-        assertEquals(7, table.get(100, 10), EPSILON);
+        // The data is the linear function 3x + y/10 - 3.
+        assertEquals(-1.5, table.get(0, 15), EPSILON);
+        assertEquals(-313, table.get(-100, -100), EPSILON);
+        assertEquals(3.5, table.get(2, 5), EPSILON);
+        assertEquals(298, table.get(100, 10), EPSILON);
+        assertEquals(307, table.get(100, 100), EPSILON);
+        assertTrue(Double.isNaN(table.get(Double.NEGATIVE_INFINITY, 15)));
+        assertTrue(Double.isNaN(table.get(2, Double.POSITIVE_INFINITY)));
     }
 
     @Test
@@ -347,8 +349,10 @@ class InterpLUTNDTest {
         InterpLUT table = table2D(xs, ys, outputs);
 
         assertEquals(-1.5 + 2 * -5.0, table.get(-1.5, -5.0), EPSILON);
-        assertEquals(-2 + 2 * -10.0, table.get(-100, -100), EPSILON);
-        assertEquals(0 + 2 * 10.0, table.get(100, 100), EPSILON);
+        assertEquals(-100 + 2 * -100.0, table.get(-100, -100), EPSILON);
+        assertEquals(100 + 2 * 100.0, table.get(100, 100), EPSILON);
+        assertTrue(Double.isNaN(table.get(Double.NEGATIVE_INFINITY, -5.0)));
+        assertTrue(Double.isNaN(table.get(0.0, Double.POSITIVE_INFINITY)));
     }
 
     @Test
@@ -402,15 +406,15 @@ class InterpLUTNDTest {
                 .add(1, 1, 11);
         InterpLUT first = builder.build();
 
-        builder.add(2, 0, 20).add(2, 1, 21);
+        builder.add(2, 0, 100).add(2, 1, 101);
         InterpLUT second = builder.build();
 
         assertEquals(4, first.size());
         assertEquals(2, first.size(0));
         assertEquals(6, second.size());
         assertEquals(3, second.size(0));
-        assertEquals(10, first.get(2.0, 0.0), EPSILON); // x is clamped to 1
-        assertEquals(20, second.get(2.0, 0.0), EPSILON);
+        assertEquals(20, first.get(2.0, 0.0), EPSILON); // extrapolated from x = 1
+        assertEquals(100, second.get(2.0, 0.0), EPSILON);
     }
 
     @Test

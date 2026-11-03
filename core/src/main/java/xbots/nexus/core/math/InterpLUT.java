@@ -33,15 +33,16 @@ import java.util.Arrays;
  * double second = table.getOutput(1, 1.5, 45.0);
  * }</pre>
  *
- * <p>Inputs outside the table are clamped to the nearest breakpoint on each
- * axis. A NaN coordinate gives NaN output values.</p>
+ * <p>Inputs outside the table are extrapolated linearly from the nearest
+ * breakpoint's value and slope. Non-finite coordinates give NaN output
+ * values.</p>
  *
  * <p>The table is evaluated by folding one-dimensional monotone cubic
  * interpolants, starting with the last axis. Each output is interpolated
- * independently and never leaves that output's smallest/largest value in the
- * table. This is not a formally monotone interpolant in more than one
- * dimension. The fold order is fixed, so swapping axes can change values
- * slightly.</p>
+ * independently. Inside the grid it stays within that output's smallest/largest
+ * value; outside the grid the linear extrapolation can leave that range. This is
+ * not a formally monotone interpolant in more than one dimension. The fold order
+ * is fixed, so swapping axes can change values slightly.</p>
  */
 public final class InterpLUT {
 
@@ -144,7 +145,8 @@ public final class InterpLUT {
 
     /**
      * Looks up the single output for a one-input, one-output table. Inputs
-     * outside the table are clamped. A NaN input gives NaN output.
+     * outside the table are extrapolated linearly. A non-finite input gives NaN
+     * output.
      */
     public double get(double input) {
         if (axes.length != 1 || outputDimensions != 1) {
@@ -158,7 +160,8 @@ public final class InterpLUT {
 
     /**
      * Looks up the single output for a table with any number of inputs. This is
-     * only valid for tables with exactly one output.
+     * only valid for tables with exactly one output. Inputs outside the table
+     * are extrapolated linearly. Non-finite coordinates give NaN.
      */
     public double get(double... coordinates) {
         if (outputDimensions != 1) {
@@ -168,7 +171,7 @@ public final class InterpLUT {
                             + "getOutputs(coordinates...)");
         }
         checkCoordinates(coordinates);
-        if (hasNaN(coordinates)) {
+        if (hasNonFinite(coordinates)) {
             return Double.NaN;
         }
         return evaluateOutput(0, coordinates);
@@ -176,25 +179,29 @@ public final class InterpLUT {
 
     /**
      * Looks up one output for a table with any number of inputs and outputs.
-     * Pass a reused coordinate array to avoid allocating inside a control loop.
+     * Inputs outside the table are extrapolated linearly. Non-finite coordinates
+     * give NaN. Pass a reused coordinate array to avoid allocating inside a
+     * control loop.
      */
     public double getOutput(int output, double... coordinates) {
         checkOutput(output);
         checkCoordinates(coordinates);
-        if (hasNaN(coordinates)) {
+        if (hasNonFinite(coordinates)) {
             return Double.NaN;
         }
         return evaluateOutput(output, coordinates);
     }
 
     /**
-     * Looks up every output, returning a new array. Pass a reused coordinate
-     * array to avoid allocating the coordinates inside a control loop.
+     * Looks up every output, returning a new array. Inputs outside the table are
+     * extrapolated linearly. Non-finite coordinates give NaN. Pass a reused
+     * coordinate array to avoid allocating the coordinates inside a control
+     * loop.
      */
     public double[] getOutputs(double... coordinates) {
         checkCoordinates(coordinates);
         double[] outputs = new double[outputDimensions];
-        if (hasNaN(coordinates)) {
+        if (hasNonFinite(coordinates)) {
             Arrays.fill(outputs, Double.NaN);
             return outputs;
         }
@@ -203,8 +210,9 @@ public final class InterpLUT {
     }
 
     /**
-     * Looks up every output into a caller-provided array. This does not allocate
-     * when both arrays are reused.
+     * Looks up every output into a caller-provided array. Inputs outside the
+     * table are extrapolated linearly. Non-finite coordinates give NaN. This
+     * does not allocate when both arrays are reused.
      */
     public void getOutputs(double[] coordinates, double[] outputs) {
         checkCoordinates(coordinates);
@@ -215,7 +223,7 @@ public final class InterpLUT {
             throw new IllegalArgumentException(
                     "Expected " + outputDimensions + " outputs, but got " + outputs.length);
         }
-        if (hasNaN(coordinates)) {
+        if (hasNonFinite(coordinates)) {
             Arrays.fill(outputs, Double.NaN);
             return;
         }
@@ -254,9 +262,9 @@ public final class InterpLUT {
         }
     }
 
-    private static boolean hasNaN(double[] values) {
+    private static boolean hasNonFinite(double[] values) {
         for (double value : values) {
-            if (Double.isNaN(value)) {
+            if (!Double.isFinite(value)) {
                 return true;
             }
         }
@@ -275,7 +283,7 @@ public final class InterpLUT {
 
         int lineLength = sizes[dimensions - 1];
         int lineCount = gridSize / lineLength;
-        double query = clamp(coordinates[dimensions - 1], axes[dimensions - 1], lineLength);
+        double query = coordinates[dimensions - 1];
         for (int line = 0; line < lineCount; line++) {
             int offset = line * lineLength;
             work[line] = interpolate1D(axes[dimensions - 1], values, base + offset,
@@ -286,7 +294,7 @@ public final class InterpLUT {
         for (int dimension = dimensions - 2; dimension >= 0; dimension--) {
             lineLength = sizes[dimension];
             lineCount = activeLength / lineLength;
-            query = clamp(coordinates[dimension], axes[dimension], lineLength);
+            query = coordinates[dimension];
             for (int line = 0; line < lineCount; line++) {
                 int offset = line * lineLength;
                 computeSlopes1D(axes[dimension], work, offset,
@@ -312,18 +320,31 @@ public final class InterpLUT {
             int lineLength = sizes[dimension];
             int lineCount = activeLength / lineLength;
             double[] axis = axes[dimension];
-            double query = clamp(coordinates[dimension], axis, lineLength);
-            boolean atLower = query <= axis[0];
-            boolean atUpper = query >= axis[lineLength - 1];
+            double query = coordinates[dimension];
+            boolean below = query < axis[0];
+            boolean above = query > axis[lineLength - 1];
 
-            if (atLower || atUpper) {
-                int valueOffset = atLower ? 0 : lineLength - 1;
+            if (below || above) {
+                int endpoint = below ? 0 : lineLength - 1;
+                double delta = query - axis[endpoint];
                 for (int output = 0; output < outputDimensions; output++) {
                     int sourceBase = output * activeLength;
                     int destinationBase = output * lineCount;
                     for (int line = 0; line < lineCount; line++) {
+                        int sourceOffset = sourceBase + line * lineLength;
+                        double slope;
+                        if (firstStage) {
+                            slope = lastAxisSlopes[
+                                    output * gridSize + line * lineLength + endpoint];
+                        } else {
+                            computeSlopes1D(axis, source, sourceOffset,
+                                    scratchSlopes, 0, lineLength, scratchLine);
+                            slope = scratchSlopes[endpoint];
+                        }
+                        // Safe in place: the line is read before its output is
+                        // written, and output indices stay below unread lines.
                         work[destinationBase + line] =
-                                source[sourceBase + line * lineLength + valueOffset];
+                                source[sourceOffset + endpoint] + delta * slope;
                     }
                 }
             } else {
@@ -372,16 +393,6 @@ public final class InterpLUT {
         }
     }
 
-    private static double clamp(double value, double[] axis, int length) {
-        if (value <= axis[0]) {
-            return axis[0];
-        }
-        if (value >= axis[length - 1]) {
-            return axis[length - 1];
-        }
-        return value;
-    }
-
     private static double interpolate1DFromWeights(double[] ys, int ysOffset,
             double[] slopes, int slopesOffset, int segment, double width,
             double leftPoint, double leftSlope, double rightPoint, double rightSlope) {
@@ -393,15 +404,16 @@ public final class InterpLUT {
 
     private static double interpolate1D(double[] xs, double[] ys, int ysOffset,
             double[] slopes, int slopesOffset, int length, double input) {
-        if (Double.isNaN(input)) {
-            return input;
+        if (!Double.isFinite(input)) {
+            return Double.NaN;
         }
         int last = length - 1;
-        if (input <= xs[0]) {
-            return ys[ysOffset];
+        if (input < xs[0]) {
+            return ys[ysOffset] + (input - xs[0]) * slopes[slopesOffset];
         }
-        if (input >= xs[last]) {
-            return ys[ysOffset + last];
+        if (input > xs[last]) {
+            return ys[ysOffset + last]
+                    + (input - xs[last]) * slopes[slopesOffset + last];
         }
 
         int i = findSegment(xs, length, input);
@@ -419,8 +431,8 @@ public final class InterpLUT {
                 leftPoint, leftSlope, rightPoint, rightSlope);
     }
 
-    // Binary search for the stretch that contains the input: the largest i with
-    // xs[i] <= input. Only called with xs[0] < input < xs[length - 1].
+    // Binary search for the stretch that contains the input: the largest i in
+    // 0..length-2 with xs[i] <= input. Called for xs[0] <= input <= xs[length-1].
     private static int findSegment(double[] xs, int length, double input) {
         int low = 0;
         int high = length - 1;
