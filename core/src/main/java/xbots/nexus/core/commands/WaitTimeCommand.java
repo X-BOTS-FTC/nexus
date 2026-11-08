@@ -2,6 +2,7 @@ package xbots.nexus.core.commands;
 
 import xbots.nexus.core.Command;
 import xbots.nexus.core.Clock;
+import xbots.nexus.core.SystemClock;
 
 /**
  * Finishes once a fixed amount of time has passed since it started.
@@ -18,6 +19,10 @@ public final class WaitTimeCommand extends Command {
     private final Clock clock;
     private final long durationNanos;
     private long startNanos;
+
+    public WaitTimeCommand(long millis) {
+        this(new SystemClock(), millis);
+    }
 
     public WaitTimeCommand(Clock clock, long millis) {
         super();
