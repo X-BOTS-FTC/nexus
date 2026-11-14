@@ -7,9 +7,12 @@ import java.util.Arrays;
  * drawing smooth curves through calibration points on a rectilinear grid. It
  * uses monotone cubic (Fritsch-Carlson / PCHIP) interpolation.
  *
- * <p>Each input has its own sorted breakpoints, and every combination of
- * breakpoints must have values for every output. Points may be added in any
- * order. Points do not have to be uniformly spaced.</p>
+ * <p>Each input has its own sorted breakpoints. Points may be added in any
+ * order, and they do not have to be uniformly spaced. Missing combinations are
+ * filled by linear interpolation along the last input that has more than one
+ * value. A line with one sample is held constant, and a line with no samples
+ * copies the nearest known point. An input with only one value is treated as
+ * constant.</p>
  *
  * <p>Single input, single output:</p>
  * <pre>{@code
@@ -38,11 +41,12 @@ import java.util.Arrays;
  * values.</p>
  *
  * <p>The table is evaluated by folding one-dimensional monotone cubic
- * interpolants, starting with the last axis. Each output is interpolated
- * independently. Inside the grid it stays within that output's smallest/largest
- * value; outside the grid the linear extrapolation can leave that range. This is
- * not a formally monotone interpolant in more than one dimension. The fold order
- * is fixed, so swapping axes can change values slightly.</p>
+ * interpolants, starting with the last input that has more than one value. Each
+ * output is interpolated independently. Inside the grid it stays within that
+ * output's smallest/largest value; outside the grid the linear extrapolation can
+ * leave that range. This is not a formally monotone interpolant in more than one
+ * dimension. The fold order is fixed, so swapping axes can change values
+ * slightly.</p>
  */
 public final class InterpLUT {
 
@@ -56,7 +60,8 @@ public final class InterpLUT {
     private final int gridSize; // number of points in the input grid
     private final int outputDimensions; // number of values produced per lookup
     private final double[] values; // outputs, output-major, last input fastest
-    private final double[] lastAxisSlopes; // slopes along the last input
+    private final double[] firstStageSlopes; // slopes along the first interpolated input
+    private final int firstStageDimension; // last input with more than one value
 
     // Scratch space for evaluating more than one input. Lookups are sequential
     // (Nexus is single-threaded), so one set of buffers per table is enough.
@@ -65,16 +70,21 @@ public final class InterpLUT {
     private final double[] scratchLine;
 
     private InterpLUT(double[][] axes, int[] sizes, double[] values,
-            double[] lastAxisSlopes, int outputDimensions) {
+            double[] firstStageSlopes, int outputDimensions, int firstStageDimension) {
         this.axes = axes;
         this.sizes = sizes;
         this.values = values;
-        this.lastAxisSlopes = lastAxisSlopes;
+        this.firstStageSlopes = firstStageSlopes;
         this.outputDimensions = outputDimensions;
+        this.firstStageDimension = firstStageDimension;
         this.gridSize = values.length / outputDimensions;
 
         int inputDimensions = axes.length;
-        work = new double[outputDimensions * (gridSize / sizes[inputDimensions - 1])];
+        if (firstStageDimension >= 0) {
+            work = new double[outputDimensions * (gridSize / sizes[firstStageDimension])];
+        } else {
+            work = new double[outputDimensions];
+        }
         if (inputDimensions == 1) {
             scratchSlopes = null;
             scratchLine = null;
@@ -155,7 +165,10 @@ public final class InterpLUT {
                             + "get(coordinates...) for a single output, or "
                             + "getOutput/getOutputs for multiple outputs");
         }
-        return interpolate1D(axes[0], values, 0, lastAxisSlopes, 0, gridSize, input);
+        if (sizes[0] == 1) {
+            return Double.isFinite(input) ? values[0] : Double.NaN;
+        }
+        return interpolate1D(axes[0], values, 0, firstStageSlopes, 0, gridSize, input);
     }
 
     /**
@@ -275,23 +288,28 @@ public final class InterpLUT {
     // needed, so there is no reason to compute the other outputs.
     private double evaluateOutput(int output, double[] coordinates) {
         int base = output * gridSize;
-        int dimensions = axes.length;
-        if (dimensions == 1) {
-            return interpolate1D(axes[0], values, base, lastAxisSlopes, base, gridSize,
+        if (firstStageDimension < 0) {
+            return values[base];
+        }
+        if (axes.length == 1) {
+            return interpolate1D(axes[0], values, base, firstStageSlopes, base, gridSize,
                     coordinates[0]);
         }
 
-        int lineLength = sizes[dimensions - 1];
+        int lineLength = sizes[firstStageDimension];
         int lineCount = gridSize / lineLength;
-        double query = coordinates[dimensions - 1];
+        double query = coordinates[firstStageDimension];
         for (int line = 0; line < lineCount; line++) {
             int offset = line * lineLength;
-            work[line] = interpolate1D(axes[dimensions - 1], values, base + offset,
-                    lastAxisSlopes, base + offset, lineLength, query);
+            work[line] = interpolate1D(axes[firstStageDimension], values, base + offset,
+                    firstStageSlopes, base + offset, lineLength, query);
         }
 
         int activeLength = lineCount;
-        for (int dimension = dimensions - 2; dimension >= 0; dimension--) {
+        for (int dimension = firstStageDimension - 1; dimension >= 0; dimension--) {
+            if (sizes[dimension] == 1) {
+                continue;
+            }
             lineLength = sizes[dimension];
             lineCount = activeLength / lineLength;
             query = coordinates[dimension];
@@ -311,12 +329,21 @@ public final class InterpLUT {
     // axis share the same query, so the segment and cubic weights are computed
     // once per stage instead of once per line and output.
     private void evaluateAll(double[] coordinates, double[] outputs) {
-        int dimensions = axes.length;
+        if (firstStageDimension < 0) {
+            for (int output = 0; output < outputDimensions; output++) {
+                outputs[output] = values[output];
+            }
+            return;
+        }
+
         int activeLength = gridSize;
         double[] source = values;
         boolean firstStage = true;
 
-        for (int dimension = dimensions - 1; dimension >= 0; dimension--) {
+        for (int dimension = firstStageDimension; dimension >= 0; dimension--) {
+            if (sizes[dimension] == 1) {
+                continue;
+            }
             int lineLength = sizes[dimension];
             int lineCount = activeLength / lineLength;
             double[] axis = axes[dimension];
@@ -334,7 +361,7 @@ public final class InterpLUT {
                         int sourceOffset = sourceBase + line * lineLength;
                         double slope;
                         if (firstStage) {
-                            slope = lastAxisSlopes[
+                            slope = firstStageSlopes[
                                     output * gridSize + line * lineLength + endpoint];
                         } else {
                             computeSlopes1D(axis, source, sourceOffset,
@@ -366,7 +393,7 @@ public final class InterpLUT {
                         double[] slopeData;
                         int slopeOffset;
                         if (firstStage) {
-                            slopeData = lastAxisSlopes;
+                            slopeData = firstStageSlopes;
                             slopeOffset = output * gridSize + line * lineLength;
                         } else {
                             computeSlopes1D(axis, source, sourceOffset,
@@ -588,9 +615,14 @@ public final class InterpLUT {
          * Builds the table. The builder is left unchanged, so more points can be
          * added and another table built, and earlier tables are not affected.
          *
-         * @throws IllegalArgumentException if there are too few points, an input
-         *                                  has fewer than two values, or the points
-         *                                  do not form a complete rectilinear grid
+         * <p>Missing combinations are filled along the last input that has more
+         * than one value. A line with one sample is held constant, and a line
+         * with no samples copies the nearest known point. Inputs with one value
+         * are treated as constant.</p>
+         *
+         * @throws IllegalArgumentException if there are no points, two points
+         *                                  have the same inputs, or the table is
+         *                                  too large
          */
         public InterpLUT build() {
             if (count == 0) {
@@ -615,11 +647,6 @@ public final class InterpLUT {
                 }
                 Arrays.sort(coordinates);
                 int unique = dedupe(coordinates);
-                if (unique < 2) {
-                    throw new IllegalArgumentException(
-                            "Input " + dimension + " has only one value: " + coordinates[0]
-                                    + ". A table needs at least two values on every input.");
-                }
                 axes[dimension] = Arrays.copyOf(coordinates, unique);
                 sizes[dimension] = unique;
             }
@@ -675,28 +702,147 @@ public final class InterpLUT {
                 }
             }
 
+            int firstStageDimension = -1;
+            for (int dimension = inputDimensions - 1; dimension >= 0; dimension--) {
+                if (sizes[dimension] > 1) {
+                    firstStageDimension = dimension;
+                    break;
+                }
+            }
+
+            if (firstStageDimension >= 0) {
+                fillMissingValues(values, filled, gridSize, outputDimensions,
+                        firstStageDimension, sizes, strides, axes);
+            }
+
+            double[] firstStageSlopes = new double[0];
+            if (firstStageDimension >= 0) {
+                firstStageSlopes = new double[(int) totalValues];
+                int firstStageSize = sizes[firstStageDimension];
+                int lineCount = gridSize / firstStageSize;
+                double[] lineScratch = new double[firstStageSize - 1];
+                for (int output = 0; output < outputDimensions; output++) {
+                    int base = output * gridSize;
+                    for (int line = 0; line < lineCount; line++) {
+                        int offset = base + line * firstStageSize;
+                        computeSlopes1D(axes[firstStageDimension], values, offset,
+                                firstStageSlopes, offset, firstStageSize, lineScratch);
+                    }
+                }
+            }
+
+            return new InterpLUT(axes, sizes, values, firstStageSlopes,
+                    outputDimensions, firstStageDimension);
+        }
+
+        private static void fillMissingValues(double[] values, boolean[] known, int gridSize,
+                int outputDimensions, int fillDimension, int[] sizes, int[] strides,
+                double[][] axes) {
+            int lineLength = sizes[fillDimension];
+            int lineCount = gridSize / lineLength;
+            int[] knownPositions = new int[lineLength];
+
+            for (int line = 0; line < lineCount; line++) {
+                int lineStart = line * lineLength;
+                int knownCount = 0;
+                for (int k = 0; k < lineLength; k++) {
+                    if (known[lineStart + k]) {
+                        knownPositions[knownCount++] = k;
+                    }
+                }
+
+                if (knownCount == 0) {
+                    int nearest = nearestKnownIndex(lineStart, gridSize, known,
+                            sizes, strides, fillDimension);
+                    if (nearest < 0) {
+                        throw new IllegalStateException("No calibration points to fill from");
+                    }
+                    for (int k = 0; k < lineLength; k++) {
+                        int index = lineStart + k;
+                        for (int output = 0; output < outputDimensions; output++) {
+                            values[output * gridSize + index] =
+                                    values[output * gridSize + nearest];
+                        }
+                    }
+                } else if (knownCount == 1) {
+                    int knownIndex = lineStart + knownPositions[0];
+                    for (int k = 0; k < lineLength; k++) {
+                        int index = lineStart + k;
+                        if (known[index]) {
+                            continue;
+                        }
+                        for (int output = 0; output < outputDimensions; output++) {
+                            values[output * gridSize + index] =
+                                    values[output * gridSize + knownIndex];
+                        }
+                    }
+                } else {
+                    for (int k = 0; k < lineLength; k++) {
+                        int index = lineStart + k;
+                        if (known[index]) {
+                            continue;
+                        }
+                        int upper = 0;
+                        while (upper < knownCount && knownPositions[upper] < k) {
+                            upper++;
+                        }
+                        int leftPosition;
+                        int rightPosition;
+                        if (upper == 0) {
+                            leftPosition = knownPositions[0];
+                            rightPosition = knownPositions[1];
+                        } else if (upper == knownCount) {
+                            leftPosition = knownPositions[knownCount - 2];
+                            rightPosition = knownPositions[knownCount - 1];
+                        } else {
+                            leftPosition = knownPositions[upper - 1];
+                            rightPosition = knownPositions[upper];
+                        }
+                        double leftCoordinate = axes[fillDimension][leftPosition];
+                        double rightCoordinate = axes[fillDimension][rightPosition];
+                        double coordinate = axes[fillDimension][k];
+                        double fraction = (coordinate - leftCoordinate)
+                                / (rightCoordinate - leftCoordinate);
+                        int leftIndex = lineStart + leftPosition;
+                        int rightIndex = lineStart + rightPosition;
+                        for (int output = 0; output < outputDimensions; output++) {
+                            double leftValue = values[output * gridSize + leftIndex];
+                            double rightValue = values[output * gridSize + rightIndex];
+                            values[output * gridSize + index] = leftValue
+                                    + fraction * (rightValue - leftValue);
+                        }
+                    }
+                }
+            }
+        }
+
+        private static int nearestKnownIndex(int lineStart, int gridSize, boolean[] known,
+                int[] sizes, int[] strides, int fillDimension) {
+            int nearest = -1;
+            int bestDistance = Integer.MAX_VALUE;
+            int[] linePositions = new int[sizes.length];
+            for (int dimension = 0; dimension < sizes.length; dimension++) {
+                linePositions[dimension] =
+                        (lineStart / strides[dimension]) % sizes[dimension];
+            }
             for (int index = 0; index < gridSize; index++) {
-                if (!filled[index]) {
-                    throw new IllegalArgumentException(
-                            "Missing grid point: "
-                                    + indexText(index, sizes, strides, axes));
+                if (!known[index]) {
+                    continue;
+                }
+                int distance = 0;
+                for (int dimension = 0; dimension < sizes.length; dimension++) {
+                    if (dimension == fillDimension) {
+                        continue;
+                    }
+                    int position = (index / strides[dimension]) % sizes[dimension];
+                    distance += Math.abs(position - linePositions[dimension]);
+                }
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    nearest = index;
                 }
             }
-
-            double[] lastAxisSlopes = new double[(int) totalValues];
-            int lastSize = sizes[inputDimensions - 1];
-            int lineCount = gridSize / lastSize;
-            double[] lineScratch = new double[lastSize - 1];
-            for (int output = 0; output < outputDimensions; output++) {
-                int base = output * gridSize;
-                for (int line = 0; line < lineCount; line++) {
-                    int offset = base + line * lastSize;
-                    computeSlopes1D(axes[inputDimensions - 1], values, offset,
-                            lastAxisSlopes, offset, lastSize, lineScratch);
-                }
-            }
-
-            return new InterpLUT(axes, sizes, values, lastAxisSlopes, outputDimensions);
+            return nearest;
         }
 
         private static int dedupe(double[] sorted) {
@@ -735,19 +881,6 @@ public final class InterpLUT {
             return text.toString();
         }
 
-        private static String indexText(int index, int[] sizes, int[] strides, double[][] axes) {
-            StringBuilder text = new StringBuilder("(");
-            int remainder = index;
-            for (int dimension = 0; dimension < sizes.length; dimension++) {
-                int position = remainder / strides[dimension];
-                remainder %= strides[dimension];
-                if (dimension > 0) {
-                    text.append(", ");
-                }
-                text.append(axes[dimension][position]);
-            }
-            return text.append(")").toString();
-        }
     }
 
     private static void computeSlopes1D(double[] x, double[] y, int yOffset,

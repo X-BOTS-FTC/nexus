@@ -356,6 +356,119 @@ class InterpLUTNDTest {
     }
 
     @Test
+    void fillsMissingGridPoints() {
+        // Missing (1, 1). The x = 1 line has only y = 0, so the whole line
+        // becomes constant.
+        InterpLUT table = InterpLUT.builder(2)
+                .add(0, 0, 0)
+                .add(0, 1, 10)
+                .add(1, 0, 20)
+                .build();
+        assertEquals(4, table.size());
+        assertEquals(0, table.get(0, 0), EPSILON);
+        assertEquals(10, table.get(0, 1), EPSILON);
+        assertEquals(20, table.get(1, 0), EPSILON);
+        assertEquals(20, table.get(1, 1), EPSILON);
+
+        // Missing middle values are filled by linear interpolation along y.
+        InterpLUT interpolated = InterpLUT.builder(2)
+                .add(0, 0, 0)
+                .add(0, 2, 20)
+                .add(1, 0, 10)
+                .add(1, 2, 30)
+                .build();
+        assertEquals(10, interpolated.get(0, 1), EPSILON);
+        assertEquals(20, interpolated.get(1, 1), EPSILON);
+
+        // The (x = 1, y = 1) line has no samples, so it copies the nearest
+        // known point. The two nearest known points are tied; the earlier one
+        // wins.
+        InterpLUT fallback = InterpLUT.builder(3)
+                .add(0, 0, 0, 1)
+                .add(0, 1, 1, 2)
+                .add(1, 0, 1, 3)
+                .build();
+        assertEquals(2, fallback.get(1, 1, 0), EPSILON);
+        assertEquals(2, fallback.get(1, 1, 1), EPSILON);
+
+        // Missing values outside the known range are extrapolated.
+        InterpLUT extrapolated = InterpLUT.builder(2)
+                .add(0, 1, 10)
+                .add(0, 2, 20)
+                .add(1, 1, 30)
+                .add(1, 2, 40)
+                .build();
+        assertEquals(0, extrapolated.get(0, 0), EPSILON);
+        assertEquals(20, extrapolated.get(1, 0), EPSILON);
+
+        // Non-uniform breakpoints are interpolated by coordinate, not index.
+        InterpLUT nonUniform = InterpLUT.builder(2)
+                .add(0, 0, 0)
+                .add(0, 3, 30)
+                .add(1, 0, 0)
+                .add(1, 3, 30)
+                .build();
+        assertEquals(10, nonUniform.get(0, 1), EPSILON);
+        assertEquals(20, nonUniform.get(0, 2), EPSILON);
+    }
+
+    @Test
+    void diagonalPointsFillEachLine() {
+        InterpLUT table = InterpLUT.builder(2)
+                .add(10, 30, 100)
+                .add(5, 15, 50)
+                .build();
+
+        assertEquals(4, table.size());
+        assertEquals(100, table.get(10, 30), EPSILON);
+        assertEquals(50, table.get(5, 15), EPSILON);
+        // The last input is y, so each x line is held constant.
+        assertEquals(50, table.get(5, 30), EPSILON);
+        assertEquals(100, table.get(10, 15), EPSILON);
+    }
+
+    @Test
+    void oneValueAxisIsConstant() {
+        InterpLUT table = InterpLUT.builder(2)
+                .add(0, 0, 0)
+                .add(0, 1, 10)
+                .add(0, 2, 20)
+                .build();
+        assertEquals(2, table.inputDimensions());
+        assertEquals(1, table.size(0));
+        assertEquals(3, table.size());
+        assertEquals(5, table.get(-100, 0.5), EPSILON);
+        assertEquals(15, table.get(100, 1.5), EPSILON);
+        assertTrue(Double.isNaN(table.get(Double.NaN, 1.0)));
+
+        InterpLUT trailingConstant = InterpLUT.builder(2)
+                .add(0, 0, 0)
+                .add(1, 0, 10)
+                .add(2, 0, 20)
+                .build();
+        assertEquals(0, trailingConstant.minInput(1), EPSILON);
+        assertEquals(0, trailingConstant.maxInput(1), EPSILON);
+        assertEquals(5, trailingConstant.get(0.5, -100), EPSILON);
+
+        InterpLUT middleConstant = InterpLUT.builder(3)
+                .add(0, 0, 0, 0)
+                .add(0, 0, 1, 10)
+                .add(0, 0, 2, 20)
+                .add(1, 0, 0, 0)
+                .add(1, 0, 1, 10)
+                .add(1, 0, 2, 20)
+                .build();
+        assertEquals(5, middleConstant.get(0.5, 100, 0.5), EPSILON);
+
+        InterpLUT singlePoint = InterpLUT.builder(2)
+                .add(0, 0, 7)
+                .build();
+        assertEquals(1, singlePoint.size());
+        assertEquals(7, singlePoint.get(100, -100), EPSILON);
+        assertTrue(Double.isNaN(singlePoint.get(Double.POSITIVE_INFINITY, 0)));
+    }
+
+    @Test
     void anyNanCoordinateGivesNan() {
         InterpLUT table2 = table2D(new double[] {0, 1}, new double[] {0, 1},
                 new double[][] {{0, 1}, {2, 3}});
@@ -451,13 +564,6 @@ class InterpLUTNDTest {
         assertThrows(IllegalArgumentException.class,
                 () -> InterpLUT.builder(1).add(0, 0).add(0, 0, 1));
 
-        // Missing (1, 1).
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(2)
-                .add(0, 0, 1)
-                .add(0, 1, 2)
-                .add(1, 0, 3)
-                .build());
-
         // Duplicate (1, 1).
         assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(2)
                 .add(0, 0, 1)
@@ -465,12 +571,6 @@ class InterpLUTNDTest {
                 .add(1, 0, 3)
                 .add(1, 1, 4)
                 .add(1, 1, 5)
-                .build());
-
-        // Only one value on input 0.
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(2)
-                .add(0, 0, 1)
-                .add(0, 1, 2)
                 .build());
 
         assertThrows(IllegalArgumentException.class,

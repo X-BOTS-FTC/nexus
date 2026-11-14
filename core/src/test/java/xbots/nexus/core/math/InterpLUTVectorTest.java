@@ -382,6 +382,74 @@ class InterpLUTVectorTest {
         assertTrue(Double.isNaN(filled[1]));
     }
 
+    @Test
+    void fillsMissingGridPointsForEveryOutput() {
+        // Missing (1, 1); the x = 1 line has only y = 0.
+        InterpLUT table = InterpLUT.builder(2, 2)
+                .add(0, 0, 0, 10)
+                .add(0, 1, 1, 11)
+                .add(1, 0, 2, 12)
+                .build();
+        assertEquals(4, table.size());
+        assertArrayEquals(new double[] {2, 12}, table.getOutputs(1, 1), EPSILON);
+
+        // Missing middle values are filled by linear interpolation.
+        InterpLUT interpolated = InterpLUT.builder(2, 2)
+                .add(0, 0, 0, 0)
+                .add(0, 2, 20, 40)
+                .add(1, 0, 10, 20)
+                .add(1, 2, 30, 60)
+                .build();
+        assertArrayEquals(new double[] {10, 20}, interpolated.getOutputs(0, 1), EPSILON);
+        assertArrayEquals(new double[] {20, 40}, interpolated.getOutputs(1, 1), EPSILON);
+
+        // Empty lines copy the nearest known point's full output vector.
+        InterpLUT fallback = InterpLUT.builder(3, 2)
+                .add(0, 0, 0, 1, 11)
+                .add(0, 1, 1, 2, 12)
+                .add(1, 0, 1, 3, 13)
+                .build();
+        assertArrayEquals(new double[] {2, 12}, fallback.getOutputs(1, 1, 0), EPSILON);
+        assertArrayEquals(new double[] {2, 12}, fallback.getOutputs(1, 1, 1), EPSILON);
+    }
+
+    @Test
+    void oneValueAxisIsConstantForEveryOutput() {
+        InterpLUT table = InterpLUT.builder(2, 2)
+                .add(0, 0, 0, 10)
+                .add(0, 1, 10, 20)
+                .add(0, 2, 20, 30)
+                .build();
+        assertEquals(1, table.size(0));
+        assertEquals(3, table.size());
+        assertArrayEquals(new double[] {15, 25}, table.getOutputs(100, 1.5), EPSILON);
+
+        InterpLUT trailingConstant = InterpLUT.builder(2, 2)
+                .add(0, 0, 0, 10)
+                .add(1, 0, 10, 20)
+                .add(2, 0, 20, 30)
+                .build();
+        assertEquals(0, trailingConstant.minInput(1), EPSILON);
+        assertArrayEquals(new double[] {5, 15},
+                trailingConstant.getOutputs(0.5, 100), EPSILON);
+
+        InterpLUT middleConstant = InterpLUT.builder(3, 2)
+                .add(0, 0, 0, 0, 10)
+                .add(0, 0, 1, 10, 20)
+                .add(0, 0, 2, 20, 30)
+                .add(1, 0, 0, 0, 10)
+                .add(1, 0, 1, 10, 20)
+                .add(1, 0, 2, 20, 30)
+                .build();
+        assertArrayEquals(new double[] {5, 15},
+                middleConstant.getOutputs(0.5, 100, 0.5), EPSILON);
+
+        InterpLUT singlePoint = InterpLUT.builder(2, 2)
+                .add(0, 0, 7, 8)
+                .build();
+        assertArrayEquals(new double[] {7, 8}, singlePoint.getOutputs(100, -100), EPSILON);
+    }
+
     // ---------------------------------------------------- validation and metadata
 
     @Test
@@ -419,13 +487,6 @@ class InterpLUTVectorTest {
         assertThrows(IllegalArgumentException.class,
                 () -> InterpLUT.builder(1, 2).add(0, 1));
 
-        // Missing (1, 1).
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(2, 2)
-                .add(0, 0, 1, 2)
-                .add(0, 1, 3, 4)
-                .add(1, 0, 5, 6)
-                .build());
-
         // Duplicate (1, 1).
         assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(2, 2)
                 .add(0, 0, 1, 2)
@@ -433,12 +494,6 @@ class InterpLUTVectorTest {
                 .add(1, 0, 5, 6)
                 .add(1, 1, 7, 8)
                 .add(1, 1, 9, 10)
-                .build());
-
-        // Only one value on input 0.
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(2, 2)
-                .add(0, 0, 1, 2)
-                .add(0, 1, 3, 4)
                 .build());
 
         assertThrows(IllegalArgumentException.class,

@@ -201,9 +201,19 @@ class InterpLUTTest {
     }
 
     @Test
-    void rejectsTooFewPoints() {
+    void rejectsNoPoints() {
         assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(1).build());
-        assertThrows(IllegalArgumentException.class, () -> InterpLUT.builder(1).add(1, 1).build());
+    }
+
+    @Test
+    void aSinglePointMakesAConstantTable() {
+        InterpLUT table = InterpLUT.builder(1).add(5, 10).build();
+        assertEquals(1, table.size());
+        assertEquals(10, table.get(-100), EPSILON);
+        assertEquals(10, table.get(5), EPSILON);
+        assertEquals(10, table.get(100), EPSILON);
+        assertTrue(Double.isNaN(table.get(Double.NaN)));
+        assertTrue(Double.isNaN(table.get(Double.POSITIVE_INFINITY)));
     }
 
     @Test
